@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Minerador de links de afiliado SHEIN (pelo celular Android ligado no USB).
+Minerador de links de afiliado SHEIN.
+Funciona com celular Android no USB ou com um emulador Android no PC
+(BlueStacks etc.) — é o caminho para quem tem iPhone.
 
 Como funciona, em poucas palavras:
-  1. O celular fica conectado no PC por cabo USB, com a "Depuração USB" ligada.
+  1. Um Android conectado pelo adb: celular no USB (Depuração USB ligada)
+     ou emulador no PC com o ADB ligado.
   2. O app da SHEIN precisa estar logado na conta de AFILIADA.
   3. O programa abre a Central de Afiliados, pesquisa cada termo da lista
      (ex.: "vestido"), toca em "Ganhe" em cada produto e lê o link de
@@ -66,26 +69,70 @@ SERIAL = CFG.get("celular_serial") or ""
 # ----------------------------------------------------------------------------
 
 def adb(*args, timeout=40):
-    """Roda um comando adb e devolve o texto da saída."""
+    """Roda um comando adb e devolve o texto da saída ("" se demorar demais)."""
     cmd = [ADB] + (["-s", SERIAL] if SERIAL else []) + list(args)
-    r = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return ""
     return r.stdout.decode("utf-8", errors="replace")
 
 
-def checar_celular():
-    """Confere se há um celular conectado e autorizado."""
-    try:
-        saida = subprocess.run([ADB, "devices"], capture_output=True, text=True, timeout=30).stdout
-    except FileNotFoundError:
-        sys.exit("Não achei o adb. Veja o passo 2 do README (Platform Tools) e o campo \"adb\" do config.")
+# Portas de ADB dos emuladores mais comuns no Windows (usado no iPhone: ver README)
+PORTAS_EMULADOR = ["127.0.0.1:5555", "127.0.0.1:5556", "127.0.0.1:5565", "127.0.0.1:5575",  # BlueStacks
+                   "127.0.0.1:7555", "127.0.0.1:16384",  # MuMu
+                   "127.0.0.1:62001", "127.0.0.1:21503", "emulator-5554"]  # Nox, MEmu, LDPlayer/AVD
+
+LARG, ALT = 1080, 2400  # tamanho da tela; é lido do aparelho em checar_celular()
+
+
+def aparelhos_prontos():
+    saida = subprocess.run([ADB, "devices"], capture_output=True, text=True, timeout=30).stdout
     linhas = [l for l in saida.splitlines()[1:] if l.strip()]
-    prontos = [l.split()[0] for l in linhas if l.split()[-1] == "device"]
+    return [l.split()[0] for l in linhas if l.split()[-1] == "device"], saida
+
+
+def checar_celular():
+    """Acha o aparelho: celular Android no USB ou emulador no PC (BlueStacks, MuMu...)."""
+    global SERIAL, LARG, ALT
+    try:
+        prontos, saida = aparelhos_prontos()
+    except FileNotFoundError:
+        sys.exit("Não achei o adb. Veja o README (Platform Tools) e o campo \"adb\" do config.")
+    emulador = (CFG.get("emulador") or "").strip()
+    if emulador and emulador not in prontos:
+        print(f"Conectando no emulador {emulador}...")
+        subprocess.run([ADB, "connect", emulador], capture_output=True, timeout=30)
+        prontos, saida = aparelhos_prontos()
+        SERIAL = SERIAL or (emulador if emulador in prontos else "")
     if not prontos:
-        sys.exit("Nenhum celular pronto. Ligue o cabo USB, ative a Depuração USB e aceite o aviso no celular.\n" + saida)
-    global SERIAL
+        # tenta achar sozinho um emulador aberto
+        for end in PORTAS_EMULADOR:
+            if end.startswith("127."):
+                subprocess.run([ADB, "connect", end], capture_output=True, timeout=10)
+        prontos, saida = aparelhos_prontos()
+    if not prontos:
+        sys.exit("Nenhum aparelho pronto.\n- Celular Android: ligue o cabo USB, ative a Depuração USB e aceite o aviso.\n"
+                 "- Emulador (quem tem iPhone): abra o BlueStacks e ligue o ADB nas configurações (veja o README).\n" + saida)
     if not SERIAL:
         SERIAL = prontos[0]
-    print(f"Celular conectado: {SERIAL}")
+    if SERIAL not in prontos:
+        sys.exit(f"O aparelho {SERIAL} do config não está conectado. Conectados: {prontos}")
+    tam = re.findall(r"(\d+)x(\d+)", adb("shell", "wm", "size"))
+    if tam:
+        LARG, ALT = (int(v) for v in tam[-1])  # usa o "Override size" se houver
+    print(f"Aparelho conectado: {SERIAL} (tela {LARG}x{ALT})")
+    if LARG > ALT:
+        print("AVISO: a tela está deitada (paisagem). No emulador, use o modo retrato/celular (veja o README).")
+
+
+def px(fracao_x=None, fracao_y=None):
+    """Converte posição em fração da tela para pixels (funciona em qualquer tamanho)."""
+    if fracao_y is None:
+        return int(fracao_x * LARG)
+    if fracao_x is None:
+        return int(fracao_y * ALT)
+    return int(fracao_x * LARG), int(fracao_y * ALT)
 
 
 def pausa(minimo=None, maximo=None):
@@ -95,19 +142,44 @@ def pausa(minimo=None, maximo=None):
     time.sleep(random.uniform(minimo, maximo))
 
 
+def foco_atual():
+    return adb("shell", "dumpsys", "window").split("mCurrentFocus", 1)[-1][:300]
+
+
+def garantir_shein_na_frente():
+    """SEGURANÇA: nunca toca em outro app. Se uma ligação, notificação ou outro app
+    estiver na frente, espera e depois traz a SHEIN de volta."""
+    avisou = False
+    for tentativa in range(40):  # até ~10 minutos
+        foco = foco_atual()
+        if PACOTE_SHEIN in foco:
+            return
+        if not avisou:
+            print(f"   outro app está na frente ({foco.strip()[:80]}); não vou tocar em nada, esperando...")
+            avisou = True
+        time.sleep(15)
+        if tentativa >= 1:
+            adb("shell", "monkey", "-p", PACOTE_SHEIN, "-c", "android.intent.category.LAUNCHER", "1")
+            time.sleep(4)
+    sys.exit("A SHEIN não voltou para a frente da tela. Abra o app e rode de novo.")
+
+
 def tocar(x, y):
+    garantir_shein_na_frente()
     # um pequeno desvio aleatório no ponto do toque
     adb("shell", "input", "tap", str(int(x + random.randint(-6, 6))), str(int(y + random.randint(-4, 4))))
 
 
 def tecla(codigo):
+    garantir_shein_na_frente()
     adb("shell", "input", "keyevent", str(codigo))
 
 
 def rolar_para_baixo():
-    y1 = random.randint(1650, 1800)
-    y2 = random.randint(750, 900)
-    x = random.randint(480, 600)
+    garantir_shein_na_frente()
+    y1 = px(fracao_y=random.uniform(0.69, 0.75))
+    y2 = px(fracao_y=random.uniform(0.31, 0.375))
+    x = px(fracao_x=random.uniform(0.44, 0.56))
     adb("shell", "input", "swipe", str(x), str(y1), str(x), str(y2), str(random.randint(500, 800)))
 
 
@@ -117,15 +189,24 @@ def sem_acento(txt):
 
 
 def digitar(txt):
+    garantir_shein_na_frente()
     txt = sem_acento(txt).replace(" ", "%s")
     adb("shell", "input", "text", txt)
 
 
 def tela_atual():
     """Lê tudo o que está na tela do celular (textos, botões e posições)."""
-    adb("shell", "uiautomator", "dump", "/sdcard/shein_ui.xml")
-    xml = adb("shell", "cat", "/sdcard/shein_ui.xml")
-    inicio = xml.find("<?xml")
+    xml, inicio = "", -1
+    for tentativa in range(3):
+        # apaga a leitura anterior: se a nova falhar, não usamos uma tela velha
+        adb("shell", "rm", "-f", "/sdcard/shein_ui.xml")
+        saida = adb("shell", "uiautomator", "dump", "/sdcard/shein_ui.xml", timeout=20)
+        if "dumped to" in saida:
+            xml = adb("shell", "cat", "/sdcard/shein_ui.xml")
+            inicio = xml.find("<?xml")
+            if inicio >= 0:
+                break
+        time.sleep(1.5)  # emuladores às vezes precisam de uma segunda tentativa
     if inicio < 0:
         return []
     try:
@@ -170,7 +251,8 @@ def visivel(n):
 
 PALAVRAS_CAPTCHA = ("captcha", "verificação de segurança", "verifique que você", "não sou um robô",
                     "deslize para", "arraste o controle", "slide to", "verify you")
-PALAVRAS_LOGIN = ("entrar / registrar", "entrar/registrar", "faça login", "fazer login", "iniciar sessão")
+PALAVRAS_LOGIN = ("entrar / registrar", "entrar/registrar", "faça login", "fazer login", "iniciar sessão",
+                  "entrar mais tarde", "insira o e-mail ou número de telefone", "prosseguir com google")
 
 
 def bloqueio(nos):
@@ -220,46 +302,113 @@ def esperar_central(segundos):
     return False
 
 
+def conta_nao_afiliada(nos):
+    """A conta logada não é de afiliada: a SHEIN mostra a página de inscrição
+    ("Afiliado Novo" no topo, com Registre-se/Entrar), e não a Central."""
+    if na_central(nos):
+        return False
+    topo = " ".join(n["texto"].lower() for n in nos if n["y2"] < px(fracao_y=0.12))
+    tudo = " ".join(n["texto"].lower() for n in nos)
+    return ("torne-se um afiliado" in tudo
+            or ("afiliado novo" in topo and "pesquisar produtos" not in tudo))
+
+
+def ir_para_tela_inicial():
+    """Abre o app (sem tocar em nada) e volta até as abas principais."""
+    adb("shell", "monkey", "-p", PACOTE_SHEIN, "-c", "android.intent.category.LAUNCHER", "1")
+    time.sleep(4)
+    for _ in range(6):
+        if "MainTabsActivity" in foco_atual():
+            break
+        tecla(4)  # voltar
+        time.sleep(1.5)
+    nos = tela_atual()
+    # 1ª abertura do app: tela de boas-vindas (país/moeda) → "Compre agora"
+    boas_vindas = achar(nos, texto="Compre agora")
+    if boas_vindas:
+        tocar(*centro(boas_vindas))
+        time.sleep(5)
+        nos = tela_atual()
+    return nos
+
+
+def aba(nos, nome):
+    """Botão de uma aba da barra de baixo (Loja, Categoria, ..., Perfil)."""
+    return next((n for n in nos if n["texto"] == nome and n["y1"] > px(fracao_y=0.85)), None)
+
+
 def abrir_central():
-    """Abre a Central de Afiliados pesquisando 'afiliado' no app (caminho oficial)."""
+    """Abre a Central de Afiliados.
+    Caminho 1: aba Perfil → "Affiliate & Creator" (posição fixa, funciona no celular e no emulador).
+    Caminho 2: pesquisar "afiliado" na busca do app (caminho oficial da SHEIN)."""
     for tentativa in range(3):
         nos = tela_atual()
         if na_central(nos):
             return nos
+        if conta_nao_afiliada(nos):
+            sys.exit("Esta conta da SHEIN NÃO é de afiliada (apareceu 'Torne-se um afiliado').\n"
+                     "Saia dela no app e entre na conta de afiliada, depois rode de novo.")
         motivo = bloqueio(nos)
         if motivo:
             esperar_pessoa(motivo)
             continue
         # se está numa página da própria Central (ex.: resultado de busca), voltar 1 tela basta
-        if "WebViewActivity" in adb("shell", "dumpsys", "window").split("mCurrentFocus", 1)[-1][:300]:
+        if "WebViewActivity" in foco_atual():
             tecla(4)
             if esperar_central(8):
                 return tela_atual()
-        # abre o app e volta até a tela inicial
-        adb("shell", "monkey", "-p", PACOTE_SHEIN, "-c", "android.intent.category.LAUNCHER", "1")
-        time.sleep(4)
-        for _ in range(6):
-            foco = adb("shell", "dumpsys", "window")
-            if "MainTabsActivity" in foco.split("mCurrentFocus", 1)[-1][:300]:
-                break
-            tecla(4)  # voltar
-            time.sleep(1.5)
-        nos = tela_atual()
-        lupa = achar(nos, desc="Pesquisa")
-        if not lupa:
-            print("Não achei a lupa da tela inicial; tentando de novo...")
+        nos = ir_para_tela_inicial()
+        motivo = bloqueio(nos)
+        if motivo:
+            esperar_pessoa(motivo)
             continue
-        tocar(lupa["x1"] - 300, centro(lupa)[1])  # toca na barra de busca
+
+        # Caminho 1: Perfil → Affiliate & Creator
+        perfil = aba(nos, "Perfil")
+        if perfil:
+            tocar(*centro(perfil))
+            time.sleep(4)
+            nos = tela_atual()
+            entrada = next((n for n in nos if re.search(r"affiliate|afiliad", n["texto"] + n["desc"], re.I)
+                            and visivel(n)), None)
+            if entrada:
+                tocar(*centro(entrada))
+                if esperar_central(30):
+                    return tela_atual()
+                if conta_nao_afiliada(tela_atual()):
+                    continue  # o começo do laço avisa e para
+                nos = ir_para_tela_inicial()
+
+        # Caminho 2: busca "afiliado" na aba Loja
+        loja = aba(nos, "Loja")
+        if loja:
+            tocar(*centro(loja))
+            time.sleep(4)
+            nos = tela_atual()
+        lupa = achar(nos, desc="Pesquisa")
+        barra = next((n for n in nos if n["classe"] == "EditText" and n["y2"] < px(fracao_y=0.15)), None)
+        if lupa:
+            tocar(px(0.45), centro(lupa)[1])  # meio da barra de busca (mesma altura da lupa)
+        elif barra:
+            tocar(*centro(barra))
+        else:
+            print("Não achei a barra de busca; tentando de novo...")
+            continue
         time.sleep(2.5)
+        if not any(n["classe"] == "EditText" for n in tela_atual()):
+            print("O toque não abriu a busca; tentando de novo...")
+            continue
         digitar("afiliado")
         time.sleep(1)
         tecla(66)  # Enter
         if esperar_central(30):
             return tela_atual()
     nos = tela_atual()
+    if conta_nao_afiliada(nos):
+        sys.exit("Esta conta da SHEIN NÃO é de afiliada. Entre na conta de afiliada e rode de novo.")
     if not na_central(nos):
-        sys.exit("Não consegui abrir a Central de Afiliados. Abra manualmente no celular "
-                 "(pesquise 'Afiliado' no app) e rode de novo.")
+        sys.exit("Não consegui abrir a Central de Afiliados. Abra no app (Perfil → Affiliate & Creator) "
+                 "e rode de novo.")
     return nos
 
 
@@ -282,10 +431,6 @@ def pesquisar(termo):
     time.sleep(1)
     tecla(66)
     time.sleep(7)
-
-
-def foco_atual():
-    return adb("shell", "dumpsys", "window").split("mCurrentFocus", 1)[-1][:300]
 
 
 def voltar_para_busca(termo):
@@ -313,14 +458,14 @@ def cards_na_tela(nos):
         if not visivel(n):
             continue
         # título: bloco largo que começa na coluna do texto do produto
-        if (400 <= n["x1"] <= 430 and n["x2"] > 900 and len(t) > 15
+        if (px(0.33) <= n["x1"] <= px(0.45) and n["x2"] > px(0.83) and len(t) > 15
                 and "vendido" not in t.lower() and not t.startswith("R$")):
             titulo, precos = t, []
         elif titulo and re.fullmatch(r"R\$[\d.]+,\d{2}", t):
             precos.append(t)
         elif titulo and t == "Ganhe" and n["classe"] == "Button":
             # só usa botões inteiros na tela (longe do topo e da barra de baixo)
-            if n["y1"] > 300 and n["y2"] < 2000:
+            if n["y1"] > px(fracao_y=0.125) and n["y2"] < px(fracao_y=0.83):
                 cards.append({"titulo": titulo, "preco": precos[0] if precos else "", "botao": n})
             titulo, precos = None, []
     return cards
@@ -356,7 +501,7 @@ def fechar_painel(nos=None):
     nos = nos if nos is not None else tela_atual()
     titulo = achar(nos, contem="Compartilhe para ganhar")
     if titulo:
-        tocar(titulo["x2"] - 42, titulo["y1"] - 16)  # o X fica logo acima, à direita
+        tocar(titulo["x2"] - px(0.039), titulo["y1"] - px(0.015))  # o X fica logo acima, à direita
         time.sleep(1.5)
 
 
@@ -511,6 +656,7 @@ def minerar():
             pesquisar(termo)
             rolagens_sem_novidade = 0
             falhas = {}
+            refeitas = 0
             fila = []  # produtos lidos da tela que ainda vão ganhar link
             while feitos_termo < meta_termo and len(prog["itens"]) < alvo:
                 if not fila:
@@ -523,6 +669,10 @@ def minerar():
                     fila = [c for c in cards_na_tela(nos) if c["titulo"] not in titulos_vistos]
                     if not fila and not achar(nos, texto="Pesquisa"):
                         # saiu da página de resultados (ex.: abriu um produto): volta e refaz a busca
+                        refeitas += 1
+                        if refeitas > 3:
+                            print("   a busca não abriu direito 3 vezes; indo para o próximo termo")
+                            break
                         voltar_para_busca(termo)
                         continue
                     if not fila:
