@@ -1,0 +1,32 @@
+# Saídas (links, progresso, logs) — ficam só no seu PC
+saida/
+*.txt
+!requirements.txt
+*.log
+
+# Configuração pessoal (pode ter seu ID de afiliada e caminhos do seu PC)
+config.json
+
+# Sessões, cookies, credenciais e perfis de navegador
+sessao/
+sessions/
+cookies*
+*.cookie
+*.session
+*.sqlite
+*.db
+.env
+.env.*
+credentials*.json
+token*.json
+*.pem
+*.key
+
+# Arquivos de teste/desenvolvimento
+dev/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.vscode/
+.idea/

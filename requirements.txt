@@ -1,0 +1,2 @@
+# Não precisa instalar nenhum pacote: o minerador usa só o Python padrão.
+# O que precisa é o "adb" (Android Platform Tools) — veja o README, passo 2.

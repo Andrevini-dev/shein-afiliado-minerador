@@ -1,0 +1,21 @@
+{
+  "buscas": [
+    "blusa feminina",
+    "vestido",
+    "calça alfaiataria",
+    "blazer",
+    "bolsa",
+    "cropped",
+    "conjunto"
+  ],
+  "quantidade_alvo": 100,
+  "koc_id_afiliada": "",
+  "adb": "adb",
+  "celular_serial": "",
+  "pausa_min_s": 3,
+  "pausa_max_s": 8,
+  "descanso_a_cada": 25,
+  "descanso_min_s": 60,
+  "descanso_max_s": 120,
+  "formato_saida": "mensagem"
+}
