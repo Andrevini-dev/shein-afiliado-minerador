@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 Minerador de links de afiliado SHEIN.
-Funciona com celular Android no USB ou com um emulador Android no PC
-(BlueStacks etc.) — é o caminho para quem tem iPhone.
+Este arquivo é o modo ANDROID (celular no cabo USB, tudo automático).
+Quem tem iPhone usa o registrar.py junto com um agente de IA (veja o README).
 
 Como funciona, em poucas palavras:
-  1. Um Android conectado pelo adb: celular no USB (Depuração USB ligada)
-     ou emulador no PC com o ADB ligado.
+  1. Um celular Android conectado pelo adb (cabo USB, Depuração USB ligada).
   2. O app da SHEIN precisa estar logado na conta de AFILIADA.
   3. O programa abre a Central de Afiliados, pesquisa cada termo da lista
      (ex.: "vestido"), toca em "Ganhe" em cada produto e lê o link de
@@ -86,11 +85,6 @@ def adb(*args, timeout=40):
     return r.stdout.decode("utf-8", errors="replace")
 
 
-# Portas de ADB dos emuladores mais comuns no Windows (usado no iPhone: ver README)
-PORTAS_EMULADOR = ["127.0.0.1:5555", "127.0.0.1:5556", "127.0.0.1:5565", "127.0.0.1:5575",  # BlueStacks
-                   "127.0.0.1:7555", "127.0.0.1:16384",  # MuMu
-                   "127.0.0.1:62001", "127.0.0.1:21503", "emulator-5554"]  # Nox, MEmu, LDPlayer/AVD
-
 LARG, ALT = 1080, 2400  # tamanho da tela; é lido do aparelho em checar_celular()
 
 
@@ -101,37 +95,25 @@ def aparelhos_prontos():
 
 
 def checar_celular():
-    """Acha o aparelho: celular Android no USB ou emulador no PC (BlueStacks, MuMu...)."""
+    """Acha o celular Android ligado no USB e lê o tamanho da tela."""
     global SERIAL, LARG, ALT
     try:
         prontos, saida = aparelhos_prontos()
     except FileNotFoundError:
         sys.exit("Não achei o adb. Veja o README (Platform Tools) e o campo \"adb\" do config.")
-    emulador = (CFG.get("emulador") or "").strip()
-    if emulador and emulador not in prontos:
-        print(f"Conectando no emulador {emulador}...")
-        subprocess.run([ADB, "connect", emulador], capture_output=True, timeout=30)
-        prontos, saida = aparelhos_prontos()
-        SERIAL = SERIAL or (emulador if emulador in prontos else "")
     if not prontos:
-        # tenta achar sozinho um emulador aberto
-        for end in PORTAS_EMULADOR:
-            if end.startswith("127."):
-                subprocess.run([ADB, "connect", end], capture_output=True, timeout=10)
-        prontos, saida = aparelhos_prontos()
-    if not prontos:
-        sys.exit("Nenhum aparelho pronto.\n- Celular Android: ligue o cabo USB, ative a Depuração USB e aceite o aviso.\n"
-                 "- Emulador (quem tem iPhone): abra o BlueStacks e ligue o ADB nas configurações (veja o README).\n" + saida)
+        sys.exit("Nenhum celular pronto. Ligue o cabo USB, ative a Depuração USB e aceite o aviso no celular.\n"
+                 "(Tem iPhone? Use o registrar.py com o seu agente de IA: veja o README.)\n" + saida)
     if not SERIAL:
         SERIAL = prontos[0]
     if SERIAL not in prontos:
-        sys.exit(f"O aparelho {SERIAL} do config não está conectado. Conectados: {prontos}")
+        sys.exit(f"O celular {SERIAL} do config não está conectado. Conectados: {prontos}")
     tam = re.findall(r"(\d+)x(\d+)", adb("shell", "wm", "size"))
     if tam:
         LARG, ALT = (int(v) for v in tam[-1])  # usa o "Override size" se houver
-    print(f"Aparelho conectado: {SERIAL} (tela {LARG}x{ALT})")
+    print(f"Celular conectado: {SERIAL} (tela {LARG}x{ALT})")
     if LARG > ALT:
-        print("AVISO: a tela está deitada (paisagem). No emulador, use o modo retrato/celular (veja o README).")
+        print("AVISO: a tela está deitada (paisagem). Deixe o celular em pé.")
 
 
 def px(fracao_x=None, fracao_y=None):
@@ -214,7 +196,7 @@ def tela_atual():
             inicio = xml.find("<?xml")
             if inicio >= 0:
                 break
-        time.sleep(1.5)  # emuladores às vezes precisam de uma segunda tentativa
+        time.sleep(1.5)  # às vezes a leitura precisa de uma segunda tentativa
     if inicio < 0:
         return []
     try:
