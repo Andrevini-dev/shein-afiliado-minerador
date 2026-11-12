@@ -39,6 +39,12 @@ except Exception:
     pass
 
 PASTA = os.path.dirname(os.path.abspath(__file__))
+# "--pasta <caminho>": usa config.json e "saida" de outra pasta (útil quando roda como skill)
+if "--pasta" in sys.argv:
+    _i = sys.argv.index("--pasta")
+    PASTA = os.path.abspath(sys.argv[_i + 1])
+    del sys.argv[_i:_i + 2]
+    os.makedirs(PASTA, exist_ok=True)
 PASTA_SAIDA = os.path.join(PASTA, "saida")
 ARQ_PROGRESSO = os.path.join(PASTA_SAIDA, "progresso.json")
 PACOTE_SHEIN = "com.zzkko"  # nome interno do app da SHEIN
@@ -49,8 +55,10 @@ PACOTE_SHEIN = "com.zzkko"  # nome interno do app da SHEIN
 
 def carregar_config():
     """Lê o config.json (ou o config.exemplo.json, se o primeiro não existir)."""
-    for nome in ("config.json", "config.exemplo.json"):
-        caminho = os.path.join(PASTA, nome)
+    pasta_programa = os.path.dirname(os.path.abspath(__file__))
+    for pasta, nome in ((PASTA, "config.json"), (PASTA, "config.exemplo.json"),
+                        (pasta_programa, "config.exemplo.json")):
+        caminho = os.path.join(pasta, nome)
         if os.path.exists(caminho):
             with open(caminho, encoding="utf-8") as f:
                 cfg = json.load(f)
