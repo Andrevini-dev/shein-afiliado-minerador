@@ -331,6 +331,13 @@ def ir_para_tela_inicial():
         tecla(4)  # voltar
         time.sleep(1.5)
     nos = tela_atual()
+    if not nos:
+        # telas com animação (ex.: Perfil) não deixam ler a tela: reabre o app, que volta na aba Loja
+        adb("shell", "am", "force-stop", PACOTE_SHEIN)
+        time.sleep(2)
+        adb("shell", "monkey", "-p", PACOTE_SHEIN, "-c", "android.intent.category.LAUNCHER", "1")
+        time.sleep(10)
+        nos = tela_atual()
     # 1ª abertura do app: tela de boas-vindas (país/moeda) → "Compre agora"
     boas_vindas = achar(nos, texto="Compre agora")
     if boas_vindas:
@@ -345,16 +352,58 @@ def aba(nos, nome):
     return next((n for n in nos if n["texto"] == nome and n["y1"] > px(fracao_y=0.85)), None)
 
 
+def _via_perfil(nos):
+    """Caminho: aba Perfil → "Affiliate & Creator"."""
+    perfil = aba(nos, "Perfil")
+    if not perfil:
+        return False
+    tocar(*centro(perfil))
+    time.sleep(4)
+    nos = tela_atual()
+    entrada = next((n for n in nos if re.search(r"affiliate|afiliad", n["texto"] + n["desc"], re.I)
+                    and visivel(n)), None)
+    if not entrada:
+        return False
+    tocar(*centro(entrada))
+    return esperar_central(30)
+
+
+def _via_busca(nos):
+    """Caminho: pesquisar "afiliado" na barra de busca da aba Loja (caminho oficial)."""
+    loja = aba(nos, "Loja")
+    if loja:
+        tocar(*centro(loja))
+        time.sleep(4)
+        nos = tela_atual()
+    lupa = achar(nos, desc="Pesquisa")
+    barra = next((n for n in nos if n["classe"] == "EditText" and n["y2"] < px(fracao_y=0.15)), None)
+    if lupa:
+        tocar(px(0.45), centro(lupa)[1])  # meio da barra de busca (mesma altura da lupa)
+    elif barra:
+        tocar(*centro(barra))
+    else:
+        print("   não achei a barra de busca")
+        return False
+    time.sleep(2.5)
+    if not any(n["classe"] == "EditText" for n in tela_atual()):
+        print("   o toque não abriu a busca")
+        return False
+    digitar("afiliado")
+    time.sleep(1)
+    tecla(66)  # Enter
+    return esperar_central(30)
+
+
 def abrir_central():
-    """Abre a Central de Afiliados.
-    Caminho 1: aba Perfil → "Affiliate & Creator" (posição fixa, funciona no celular e no emulador).
-    Caminho 2: pesquisar "afiliado" na busca do app (caminho oficial da SHEIN)."""
-    for tentativa in range(3):
+    """Abre a Central de Afiliados, alternando dois caminhos:
+    busca "afiliado" (aba Loja) e Perfil → "Affiliate & Creator"."""
+    caminhos = [_via_busca, _via_perfil, _via_busca, _via_perfil]
+    for caminho in caminhos:
         nos = tela_atual()
         if na_central(nos):
             return nos
         if conta_nao_afiliada(nos):
-            sys.exit("Esta conta da SHEIN NÃO é de afiliada (apareceu 'Torne-se um afiliado').\n"
+            sys.exit("Esta conta da SHEIN NÃO é de afiliada (abriu a página de inscrição 'Afiliado Novo').\n"
                      "Saia dela no app e entre na conta de afiliada, depois rode de novo.")
         motivo = bloqueio(nos)
         if motivo:
@@ -370,46 +419,7 @@ def abrir_central():
         if motivo:
             esperar_pessoa(motivo)
             continue
-
-        # Caminho 1: Perfil → Affiliate & Creator
-        perfil = aba(nos, "Perfil")
-        if perfil:
-            tocar(*centro(perfil))
-            time.sleep(4)
-            nos = tela_atual()
-            entrada = next((n for n in nos if re.search(r"affiliate|afiliad", n["texto"] + n["desc"], re.I)
-                            and visivel(n)), None)
-            if entrada:
-                tocar(*centro(entrada))
-                if esperar_central(30):
-                    return tela_atual()
-                if conta_nao_afiliada(tela_atual()):
-                    continue  # o começo do laço avisa e para
-                nos = ir_para_tela_inicial()
-
-        # Caminho 2: busca "afiliado" na aba Loja
-        loja = aba(nos, "Loja")
-        if loja:
-            tocar(*centro(loja))
-            time.sleep(4)
-            nos = tela_atual()
-        lupa = achar(nos, desc="Pesquisa")
-        barra = next((n for n in nos if n["classe"] == "EditText" and n["y2"] < px(fracao_y=0.15)), None)
-        if lupa:
-            tocar(px(0.45), centro(lupa)[1])  # meio da barra de busca (mesma altura da lupa)
-        elif barra:
-            tocar(*centro(barra))
-        else:
-            print("Não achei a barra de busca; tentando de novo...")
-            continue
-        time.sleep(2.5)
-        if not any(n["classe"] == "EditText" for n in tela_atual()):
-            print("O toque não abriu a busca; tentando de novo...")
-            continue
-        digitar("afiliado")
-        time.sleep(1)
-        tecla(66)  # Enter
-        if esperar_central(30):
+        if caminho(nos):
             return tela_atual()
     nos = tela_atual()
     if conta_nao_afiliada(nos):
